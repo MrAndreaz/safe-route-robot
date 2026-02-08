@@ -1,0 +1,248 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+/* === ПИНЫ === */
+const uint8_t PWM_PINS[2]  = { 11, 12 };
+const uint8_t IN1_PINS[2]  = { 32, 34 };
+const uint8_t IN2_PINS[2]  = { 33, 35 };
+const uint8_t SERVO1_PIN = A6;
+const uint8_t SERVO2_PIN = 6;
+const uint8_t TM_CLK_PIN = 5;
+const uint8_t TM_DIO_PIN = 4;
+
+Servo servo1, servo2;
+
+/* ==== TM1637 ==== */
+class TM1637 {
+public:
+  TM1637(uint8_t clkPin, uint8_t dioPin) : clk(clkPin), dio(dioPin) {}
+  void begin() {
+    pinMode(clk, OUTPUT); pinMode(dio, OUTPUT);
+    digitalWrite(clk, HIGH); digitalWrite(dio, HIGH);
+  }
+  void start(){ digitalWrite(dio, LOW); delayMicroseconds(2); digitalWrite(clk, LOW); }
+  void stop(){ digitalWrite(clk, LOW); digitalWrite(dio, LOW); delayMicroseconds(2); digitalWrite(clk, HIGH); digitalWrite(dio, HIGH); }
+  void writeByte(uint8_t b){
+    for(int i=0;i<8;i++){
+      digitalWrite(clk, LOW);
+      digitalWrite(dio, (b&1)?HIGH:LOW);
+      delayMicroseconds(3);
+      digitalWrite(clk, HIGH);
+      delayMicroseconds(3);
+      b >>= 1;
+    }
+    digitalWrite(clk, LOW);
+    pinMode(dio, INPUT);
+    delayMicroseconds(3);
+    digitalWrite(clk, HIGH);
+    delayMicroseconds(3);
+    pinMode(dio, OUTPUT);
+  }
+  void setDigitRaw(uint8_t idx, uint8_t segments){
+    if(idx>3) return;
+    start(); writeByte(0x44); stop();
+    start(); writeByte(0xC0|idx); writeByte(segments>>1); stop();
+    start(); writeByte(0x88|0x07); stop();
+  }
+  void setAll(uint8_t d[4]){
+    start(); writeByte(0x40); stop();
+    start(); writeByte(0xC0);
+    for(int i=0;i<4;i++) writeByte(d[i]>>1);
+    stop();
+    start(); writeByte(0x88|0x07); stop();
+  }
+private:
+  uint8_t clk,dio;
+};
+TM1637 tm(TM_CLK_PIN, TM_DIO_PIN);
+
+/* ==== CRC ==== */
+// XOR-контрольная сумма, возвращается байт
+uint8_t calcCRC(const String &s) {
+  uint8_t crc = 0;
+  for (size_t i = 0; i < s.length(); i++) crc ^= (uint8_t)s[i];
+  return crc;
+}
+
+// Ожидаем запись формата: "<data>*<HEXCRC>"
+// Если CRC совпадает — заменяем line на data и возвращаем true.
+// Иначе false.
+bool verifyAndStripCRC(String &line) {
+  int star = line.lastIndexOf('*');
+  if (star < 1 || star > line.length()-2) return false; // * отсутствует или нет CRC
+  String data = line.substring(0, star);
+  String crcStr = line.substring(star+1);
+  char buf[10];
+  crcStr.toCharArray(buf, sizeof(buf));
+  long recv = strtol(buf, NULL, 16);
+  uint8_t calc = calcCRC(data);
+  if ((uint8_t)recv != calc) return false;
+  line = data;
+  return true;
+}
+
+/* ==== МОТОРЫ ==== */
+void motorInit(){
+  for(int i=0;i<2;i++){
+    pinMode(PWM_PINS[i],OUTPUT);
+    pinMode(IN1_PINS[i],OUTPUT);
+    pinMode(IN2_PINS[i],OUTPUT);
+    analogWrite(PWM_PINS[i], 0); // если поддерживается
+    digitalWrite(IN1_PINS[i], LOW);
+    digitalWrite(IN2_PINS[i], LOW);
+  }
+}
+
+void motorSet(int motorIndex, int val){
+  if(motorIndex<1||motorIndex>2) return;
+  int idx=motorIndex-1;
+  val=constrain(val,-100,100);
+  int pwm=map(abs(val),0,100,0,255);
+
+  if(val>0){
+    digitalWrite(IN1_PINS[idx],HIGH);
+    digitalWrite(IN2_PINS[idx],LOW);
+  }
+  else if(val<0){
+    digitalWrite(IN1_PINS[idx],LOW);
+    digitalWrite(IN2_PINS[idx],HIGH);
+  }
+  else {
+    digitalWrite(IN1_PINS[idx],LOW);
+    digitalWrite(IN2_PINS[idx],LOW);
+    pwm = 0;
+  }
+  analogWrite(PWM_PINS[idx], pwm);
+}
+
+/* ==== ПАРСИНГ ЧИСЕЛ ==== */
+long parseNumber(String s){
+  s.trim();
+  if(s.length()==0) return 0;
+  if(s.startsWith("0b")||s.startsWith("0B")) return strtol(s.c_str()+2,NULL,2);
+  if(s.startsWith("0x")||s.startsWith("0X")) return strtol(s.c_str()+2,NULL,16);
+  return s.toInt();
+}
+
+/* ==== РАБОТА С КОМАНДАМИ ==== */
+void handleCommand(String line){
+  line.trim();
+  if(line.length() == 0) return;
+
+  // Проверяем CRC и чтобы line стал "data" без CRC
+  if(!verifyAndStripCRC(line)) return;   // если CRC неверный — игнорируем
+    if(line.startsWith("M1 ")) motorSet(1, parseNumber(line.substring(3)));
+  else if(line.startsWith("M2 ")) motorSet(2, parseNumber(line.substring(3)));
+  else if(line.startsWith("MP ")) {
+    // MP v1 v2
+    int sp1 = line.indexOf(' ', 3);
+    if (sp1 == -1) return;
+    String p1 = line.substring(3, sp1);
+    String p2 = line.substring(sp1+1);
+    motorSet(1, parseNumber(p1));
+    motorSet(2, parseNumber(p2));
+  }
+  else if(line.startsWith("S1 ")) servo1.write(constrain(parseNumber(line.substring(3)),0,180));
+  else if(line.startsWith("S2 ")) servo2.write(constrain(parseNumber(line.substring(3)),0,180));
+  else if(line.startsWith("DALL ")){
+    uint8_t d[4];
+    int idx = 5;
+    for(int i=0;i<4;i++){
+      int sp = line.indexOf(' ', idx);
+      if(sp == -1 && i < 3) return;
+      String part = (sp == -1) ? line.substring(idx) : line.substring(idx, sp);
+      d[i] = (uint8_t)parseNumber(part);
+      idx = sp + 1;
+    }
+    tm.setAll(d);
+  }
+  else if(line.startsWith("D ")){
+    int sp1 = line.indexOf(' ', 2);
+    if(sp1 == -1) return;
+    int idx = parseNumber(line.substring(2, sp1));
+    uint8_t val = (uint8_t)parseNumber(line.substring(sp1+1));
+    tm.setDigitRaw(idx, val);
+  }
+  else if(line == "PING"){
+    Serial3.println("PONG");
+  }
+  // прочие команды игнорируем
+}
+
+/* ==== ROBUST SERIAL PARSER ==== */
+String input3 = "";
+unsigned long lastByteTime = 0;
+const unsigned long PACKET_TIMEOUT_MS = 200; // чуть более консервативно
+const size_t MAX_PACKET_LEN = 128; // было пусто -> задаём разумный лимит
+
+inline bool isAllowedChar(char c) {
+  // Разрешаем: заглавные буквы, цифры, пробел, '-' и '*' (и CR/LF обрабатываются отдельно)
+  if (c >= 'A' && c <= 'Z') return true;
+  if (c >= '0' && c <= '9') return true;
+  if (c == ' ' || c == '-' || c == '*') return true;
+  return false;
+}
+
+inline bool isCommandStart(char c) {
+  // Наши команды начинаются с M, S, D или P
+  return (c == 'M' || c == 'S' || c == 'D' || c == 'P');
+}
+
+void safeSerialLoop() {
+  while (Serial3.available()) {
+    char c = Serial3.read();
+    unsigned long now = millis();
+
+    // игнорируем явные нулевые байты (частая форма помех)
+    if (c == 0x00) {
+      continue;
+    }
+
+    // если между байтами прошёл большой интервал — сбрасываем буфер
+    if (now - lastByteTime > PACKET_TIMEOUT_MS) {
+      input3 = "";
+    }
+    lastByteTime = now;
+
+    // если буфер пуст и пришёл невалидный стартовый символ — игнорируем
+    if (input3.length() == 0) {
+      if (!isCommandStart(c)) {
+        // стартовый символ не из набора команд — пропускаем
+        continue;
+      }
+    }
+
+    // разрешаем только допустимые символы (CR/LF обработаем отдельно)
+    if (c != '\n' && c != '\r' && !isAllowedChar(c)) {
+      // пришёл неразрешённый символ — сбрасываем буфер (мусор)
+      input3 = "";
+      continue;
+    }
+
+    if (c == '\n') {
+      // конец строки — обрабатываем
+      handleCommand(input3);
+      input3 = "";
+    }
+    else if (c != '\r') {
+      input3 += c;
+      if (input3.length() > MAX_PACKET_LEN) {
+        // слишком длинный пакет — сброс
+        input3 = "";
+      }
+    }
+  }
+}
+
+/* ==== SETUP / LOOP ==== */
+void setup(){
+  Serial3.begin(38400); // UART к ESP
+  motorInit();
+  servo1.attach(SERVO1_PIN);
+  servo2.attach(SERVO2_PIN);
+  tm.begin();
+}
+
+void loop(){
+  safeSerialLoop();
+}
