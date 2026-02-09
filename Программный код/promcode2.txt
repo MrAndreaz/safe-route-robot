@@ -64,9 +64,6 @@ uint8_t calcCRC(const String &s) {
   return crc;
 }
 
-// Ожидаем запись формата: "<data>*<HEXCRC>"
-// Если CRC совпадает — заменяем line на data и возвращаем true.
-// Иначе false.
 bool verifyAndStripCRC(String &line) {
   int star = line.lastIndexOf('*');
   if (star < 1 || star > line.length()-2) return false; // * отсутствует или нет CRC
@@ -166,17 +163,15 @@ void handleCommand(String line){
   else if(line == "PING"){
     Serial3.println("PONG");
   }
-  // прочие команды игнорируем
 }
 
 /* ==== ROBUST SERIAL PARSER ==== */
 String input3 = "";
 unsigned long lastByteTime = 0;
-const unsigned long PACKET_TIMEOUT_MS = 200; // чуть более консервативно
-const size_t MAX_PACKET_LEN = 128; // было пусто -> задаём разумный лимит
+const unsigned long PACKET_TIMEOUT_MS = 200;
+const size_t MAX_PACKET_LEN = 128;
 
 inline bool isAllowedChar(char c) {
-  // Разрешаем: заглавные буквы, цифры, пробел, '-' и '*' (и CR/LF обрабатываются отдельно)
   if (c >= 'A' && c <= 'Z') return true;
   if (c >= '0' && c <= '9') return true;
   if (c == ' ' || c == '-' || c == '*') return true;
@@ -193,34 +188,27 @@ void safeSerialLoop() {
     char c = Serial3.read();
     unsigned long now = millis();
 
-    // игнорируем явные нулевые байты (частая форма помех)
     if (c == 0x00) {
       continue;
     }
 
-    // если между байтами прошёл большой интервал — сбрасываем буфер
     if (now - lastByteTime > PACKET_TIMEOUT_MS) {
       input3 = "";
     }
     lastByteTime = now;
 
-    // если буфер пуст и пришёл невалидный стартовый символ — игнорируем
     if (input3.length() == 0) {
       if (!isCommandStart(c)) {
-        // стартовый символ не из набора команд — пропускаем
         continue;
       }
     }
 
-    // разрешаем только допустимые символы (CR/LF обработаем отдельно)
     if (c != '\n' && c != '\r' && !isAllowedChar(c)) {
-      // пришёл неразрешённый символ — сбрасываем буфер (мусор)
       input3 = "";
       continue;
     }
 
     if (c == '\n') {
-      // конец строки — обрабатываем
       handleCommand(input3);
       input3 = "";
     }

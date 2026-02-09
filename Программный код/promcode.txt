@@ -1,5 +1,4 @@
 // ESP8266: поднимает AP, web UI и пересылает команды в контроллер ZARNITZA по UART
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 
@@ -10,8 +9,6 @@ const long SERIAL_BAUD = 38400; // UART -> Zarnitza
 const uint8_t LED_BLUE_PIN  = 14;
 const uint8_t LED_GREEN_PIN = 15;
 uint8_t ledG = 0, ledB = 0;
-
-// Предустановленные эмоции
 uint8_t emotionPatterns[4][4] = {
   { 66, 16, 16,  6 },
   { 70, 16, 16, 70 },
@@ -281,7 +278,6 @@ String byteToHex2(uint8_t b) {
   return String(buf);
 }
 
-// отправить команду "<data>*XX\n"
 void sendCmdToZarnitza(const String &s) {
   String data = s;
   while (data.endsWith("\n") || data.endsWith("\r")) data.remove(data.length()-1);
@@ -290,7 +286,6 @@ void sendCmdToZarnitza(const String &s) {
   Serial.print(out);
 }
 
-// URLdecode хелпер
 String urlDecode(String input) {
   String ret = input;
   ret.replace("+"," ");
@@ -317,7 +312,6 @@ long parseAnyInt(const String &s) {
   }
 }
 
-// применить только GREEN и BLUE
 void applyLedHardware(uint8_t g, uint8_t b) {
   // analogWrite range on ESP8266 default 0..1023, map from 0..255
   int awG = map(g, 0, 255, 0, 1023);
@@ -342,7 +336,6 @@ void handleMotor() {
   server.send(200,"text/plain","OK");
 }
 
-// Новый: атомарная отправка сразу двух моторов одной командой
 void handleMotorPair() {
   if (!server.hasArg("v1") || !server.hasArg("v2")) { server.send(400,"text/plain","missing"); return; }
   int v1 = server.arg("v1").toInt(); v1 = constrain(v1, -100, 100);
@@ -466,7 +459,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/motor", handleMotor);         // legacy
-  server.on("/motorpair", handleMotorPair); // новый, атомарный
+  server.on("/motorpair", handleMotorPair); // новый
   server.on("/servo", handleServo);
   server.on("/display", handleDisplay);
   server.on("/displayall", handleDisplayAll);
